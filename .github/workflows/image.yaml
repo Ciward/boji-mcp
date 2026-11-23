@@ -16,7 +16,7 @@ jobs:
         run: |
           set -eu
           docker run -d --name smoke --volume /data --read-only --tmpfs /tmp -e "BOJI_ADMIN_PASSWORD=$(openssl rand -hex 32)" -p 127.0.0.1:18787:8787 "boji:$GITHUB_SHA"
-          curl --retry 20 --retry-connrefused --retry-delay 1 -fsS http://127.0.0.1:18787/healthz
+          curl --retry 20 --retry-all-errors --retry-delay 1 -fsS http://127.0.0.1:18787/healthz
           curl -fsS http://127.0.0.1:18787/.well-known/oauth-authorization-server
       - name: Export revision-tagged image
         run: docker save "boji:$GITHUB_SHA" | gzip -1 > boji-linux-amd64.tar.gz
