@@ -19,6 +19,45 @@ Boji 是单人自托管服务。你可以只用网页记餐，也可以把支持
 3. 将公开地址下的所有路径转发至 Boji；同机反向代理可回源 `127.0.0.1:8787`，保留原始 Host。确认公网 `/healthz` 返回 `ok: true`，`/.well-known/oauth-authorization-server` 的 `issuer` 等于公开 origin，`/.well-known/oauth-protected-resource/mcp` 的 `resource` 指向公开 `/mcp`，未携带凭据的 `POST /mcp` 返回 `401`。
 4. 交付实际网页地址、完整 `https://…/mcp` 地址、服务器上 `.env` 的位置和下面的客户端接入步骤。由账本主人在 Boji 授权页输入管理密码，聊天中只提供获取方式。若宿主登录需要本人操作，注明已通过的服务端检查，以及授权后要运行的 `boji_get_context` 验证指令。
 
+## 从公开仓库运行自己的实例
+
+生产服务器只需本仓库、实例配置和持久数据。建议把代码、账本和凭据放进三个独立目录。示例以 Linux 和 Docker Compose v2 为例。
+
+```sh
+git clone https://github.com/Ciward/boji-mcp.git /opt/boji
+cd /opt/boji
+sudo install -d -m 0700 -o 1000 -g 1000 /var/lib/boji
+sudo install -d -m 0700 /etc/boji
+```
+
+首次安装可在 root shell 执行以下命令。将示例域名替换为本实例实际域名。`noclobber` 保护已有配置。
+
+```sh
+(umask 077; set -C; {
+  echo 'BOJI_PUBLIC_URL=https://boji.example.org'
+  echo 'BOJI_TIMEZONE=Asia/Shanghai'
+  echo 'BOJI_DATA_PATH=/var/lib/boji'
+  echo 'BOJI_ENV_FILE=/etc/boji/instance.env'
+  echo 'COMPOSE_PROJECT_NAME=boji'
+  printf 'BOJI_ADMIN_PASSWORD=%s\n' "$(openssl rand -hex 32)"
+} > /etc/boji/instance.env)
+cd /opt/boji
+docker compose --env-file /etc/boji/instance.env up -d --build
+curl -fsS http://127.0.0.1:8787/healthz
+```
+
+默认宿主端口为 `127.0.0.1:8787`，容器端口固定为 `8787`。如有特定的受限回源地址，在配置中设置 `BOJI_BIND_ADDRESS` 和 `BOJI_BIND_PORT`。`BOJI_DATA_PATH` 是宿主机持久目录，`BOJI_ENV_FILE` 是注入服务容器的配置文件。宿主和容器内的路径可以不同。
+
+**可选 Cloudflare Tunnel。** 从 Cloudflare 的隧道管理页面获取 remotely-managed tunnel 的连接令牌。将令牌放在服务器上的 `/etc/boji/tunnel-token`，由 UID 1000 拥有，权限 `0400`。在 `instance.env` 添加 `BOJI_TUNNEL_TOKEN_FILE=/etc/boji/tunnel-token`。对于该隧道，把公开主机名路由的源站设为 `http://boji:8787`，保持原 Host。两个容器使用 Compose 服务名互相寻址。启用命令如下，后续升级也使用相同文件组合。
+
+```sh
+docker compose --env-file /etc/boji/instance.env -f compose.yaml -f compose.tunnel.yaml up -d --build
+```
+
+**接管已有实例。** 先对当前账本做 SQLite 在线备份，将原实例配置和部署版本留作回滚。将原 `BOJI_PUBLIC_URL`、`BOJI_PUBLIC_URL_ALIASES`、管理密码或其原 verifier、时区复用到新配置。把 `BOJI_DATA_PATH` 指向已有数据库所在目录，延用原监听地址、端口与隧道凭据。优先在隔离目录用备份测试恢复，切换时先停止旧服务，再启动公开库版本；同一数据库只由一个实例写入。若旧版隧道指向静态容器 IP，应在切换时把源站更新为 `http://boji:8787`。验证网页登录、已有授权和健康来源都能访问原账本。
+
+**跟随社区更新。** 记录当前 `git rev-parse HEAD`，备份账本和实例配置，再运行 `git pull --ff-only`，使用原 Compose 参数执行 `up -d --build`。检查公网健康、OAuth 发现和一次已授权的只读调用。回滚时停止新服务，检出旧提交，将升级前的数据库快照恢复到独立空目录，再使用与快照匹配的原配置和版本启动；切换前保留升级后的数据以便补录。
+
 ## 先在本机记一餐
 
 在仓库根目录运行以下命令。需要 Node.js 24 或以上版本及 npm。

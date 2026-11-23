@@ -1,0 +1,23 @@
+# In Cloudflare, route the public hostname to http://boji:8787.
+services:
+  tunnel:
+    image: cloudflare/cloudflared:2026.8.2
+    restart: unless-stopped
+    depends_on:
+      boji:
+        condition: service_healthy
+    command: ['tunnel', '--no-autoupdate', '--protocol', 'http2', 'run', '--token-file', '/run/secrets/tunnel-token']
+    user: '1000:1000'
+    volumes:
+      - type: bind
+        source: ${BOJI_TUNNEL_TOKEN_FILE:?Set an absolute path to the tunnel token file}
+        target: /run/secrets/tunnel-token
+        read_only: true
+        bind:
+          create_host_path: false
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 192m
+    cpus: 0.5
+    pids_limit: 64

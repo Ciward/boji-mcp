@@ -3,13 +3,14 @@ services:
     build: .
     restart: unless-stopped
     ports:
-      - '127.0.0.1:8787:8787'
-    env_file: .env
+      - '${BOJI_BIND_ADDRESS:-127.0.0.1}:${BOJI_BIND_PORT:-8787}:8787'
+    env_file: ${BOJI_ENV_FILE:-.env}
     environment:
       BOJI_HOST: 0.0.0.0
+      BOJI_PORT: 8787
       BOJI_DATA_DIR: /data
     volumes:
-      - ./data:/data
+      - '${BOJI_DATA_PATH:-./data}:/data'
     read_only: true
     tmpfs:
       - /tmp:size=32m,mode=1777
