@@ -1,0 +1,40 @@
+import { chromium,expect } from '@playwright/test';
+import { readFileSync,mkdirSync } from 'node:fs';
+import { resolve } from 'node:path';
+const base=process.argv[2]??'http://127.0.0.1:18787',credential=process.argv[3];if(!credential)throw new Error('provide path of isolated test-auth.json');
+const {password}=JSON.parse(readFileSync(credential,'utf8'));mkdirSync('artifacts',{recursive:true});
+const browser=await chromium.launch({headless:true,executablePath:process.env.CHROME_PATH??'/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'});
+const context=await browser.newContext({viewport:{width:1440,height:1000}});const page=await context.newPage();const errors=[];page.on('pageerror',err=>errors.push(err.message));
+try {
+ await page.goto(base);await page.getByLabel('访问密码').fill(password);await page.getByRole('button',{name:'打开我的日记'}).click();
+ await expect(page.getByRole('heading',{name:'饮食日记',exact:true})).toBeVisible();
+ await page.screenshot({path:'artifacts/desktop-empty.png',fullPage:true});
+ await page.getByRole('button',{name:'记一餐',exact:true}).click();
+ await page.getByLabel('餐食名称',{exact:true}).fill('浏览器验证午餐');await page.getByLabel('食物名称',{exact:true}).fill('标签酸奶');
+ await page.getByLabel('能量 kcal',{exact:true}).fill('180');await page.getByLabel('蛋白质 g',{exact:true}).fill('12');
+ await page.getByLabel('碳水化合物 g',{exact:true}).fill('18');await page.getByLabel('脂肪 g',{exact:true}).fill('6');
+ await page.getByRole('button',{name:'保存餐食',exact:true}).click();await expect(page.getByRole('heading',{name:'浏览器验证午餐',exact:true})).toBeVisible();
+ const state=await page.request.get(base+'/api/v1/session');const csrf=(await state.json()).csrf_token;
+ const meals=await (await page.request.get(base+'/api/v1/meals')).json();const meal=meals.items.find(x=>x.title==='浏览器验证午餐');if(!meal||meal.totals.energy_kcal!==180)throw new Error('save readback failed');
+ await page.getByRole('button',{name:'编辑记录'}).click();await page.getByLabel('实际食用 %',{exact:true}).fill('50');
+ // Concurrent write deliberately makes browser draft stale; verify UI preserves and offers explicit reconciliation.
+ const next={...meal,title:'另一入口更新',items:meal.items};for(const k of ['id','version','totals','unknown_counts','deleted_at','created_at','updated_at'])delete next[k];
+ const concurrent=await page.request.put(base+'/api/v1/meals/'+meal.id,{headers:{'X-CSRF-Token':csrf,Origin:base},data:{idempotency_key:'browser-concurrent-001',expected_version:meal.version,meal:next}});if(concurrent.status()!==200)throw new Error('concurrent test setup failed');
+ await page.getByRole('button',{name:'保存餐食',exact:true}).click();await expect(page.getByText('这条记录已有新的变化')).toBeVisible();await expect(page.getByLabel('实际食用 %',{exact:true})).toHaveValue('50');
+ await page.getByRole('button',{name:'查看最新版本'}).click();await page.getByRole('button',{name:/保留草稿，以版本/}).click();await page.getByRole('button',{name:'保存餐食',exact:true}).click();
+ await expect(page.getByRole('heading',{name:'浏览器验证午餐',exact:true})).toBeVisible();
+ const after=await (await page.request.get(base+'/api/v1/meals/'+meal.id)).json();if(after.meal.version!==3||after.meal.totals.energy_kcal!==90)throw new Error('conflict reconciliation failed');
+ await page.screenshot({path:'artifacts/desktop-diary.png',fullPage:true});
+ await page.getByRole('button',{name:'移除',exact:true}).click();await page.getByRole('dialog').getByRole('button',{name:'移入回收站',exact:true}).click();
+ await page.getByRole('navigation',{name:'主导航'}).getByRole('button',{name:'回收站'}).click();await page.getByRole('button',{name:'恢复这顿餐食',exact:true}).click();
+ const restored=await (await page.request.get(base+'/api/v1/meals/'+meal.id)).json();if(restored.meal.deleted_at!==null)throw new Error('restore failed');
+ await page.getByRole('navigation',{name:'主导航'}).getByRole('button',{name:'数据源'}).click();await page.getByRole('button',{name:'添加来源',exact:true}).click();await page.getByLabel('来源名称').fill('测试 Apple XML');await page.getByLabel('接入方式').selectOption('apple_xml');await page.getByRole('button',{name:'创建来源',exact:true}).click();await expect(page.getByLabel('仅显示一次的上传凭证')).toBeVisible();await page.getByRole('button',{name:'我已保存，关闭凭证'}).click();
+ await page.locator('input[type=file]').setInputFiles(resolve('fixtures/health/apple-export.xml'));await page.getByRole('button',{name:'上传并导入'}).click();await expect(page.getByText(/导入回执/)).toBeVisible();
+ await page.screenshot({path:'artifacts/desktop-sources.png',fullPage:true});
+ await page.setViewportSize({width:390,height:844});await page.getByRole('navigation',{name:'移动导航'}).getByRole('button',{name:'饮食日记'}).click();
+ await expect(page.getByRole('button',{name:'记一餐',exact:true})).toBeVisible();await page.screenshot({path:'artifacts/mobile-diary.png',fullPage:true});
+ const overflow=await page.evaluate(()=>document.documentElement.scrollWidth>window.innerWidth);if(overflow)throw new Error('mobile horizontal overflow');
+ await page.getByRole('button',{name:'记一餐',exact:true}).click();await expect(page.getByRole('dialog')).toBeVisible();await page.screenshot({path:'artifacts/mobile-editor.png',fullPage:true});
+ if(errors.length)throw new Error('browser errors: '+errors.join(';'));
+ console.log(JSON.stringify({login:true,create:true,optimistic_conflict_preserved:true,edit:true,delete:true,restore:true,source_create:true,xml_import:true,mobile_no_overflow:true,page_errors:errors,screenshots:'artifacts/'}));
+}finally{await browser.close();}

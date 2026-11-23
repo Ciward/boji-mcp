@@ -1,0 +1,1 @@
+{"extends":"./tsconfig.server.json","compilerOptions":{"outDir":"dist/operator","rootDir":".","noEmit":false},"include":["src/**/*.ts","scripts/backup.ts","scripts/import-health.ts","scripts/seed-demo.ts","scripts/setup.ts"]}

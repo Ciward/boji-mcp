@@ -1,0 +1,10 @@
+import { mkdtempSync,writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join,resolve } from 'node:path';
+import { randomBytes } from 'node:crypto';
+import { createApp } from '../src/app.js';
+const dataDir=mkdtempSync(join(tmpdir(),'boji-ui-')),password=randomBytes(24).toString('hex'),port=18787;
+writeFileSync(join(dataDir,'test-auth.json'),JSON.stringify({password}),{mode:0o600});
+const {app,store}=createApp({dataDir,adminPassword:password,host:'127.0.0.1',port,publicUrl:`http://127.0.0.1:${port}`,timezone:'Asia/Shanghai',webDir:resolve('dist/web')});
+const server=app.listen(port,'127.0.0.1',()=>console.log(JSON.stringify({url:`http://127.0.0.1:${port}`,dataDir})));
+process.on('SIGTERM',()=>server.close(()=>{store.close();process.exit(0);}));

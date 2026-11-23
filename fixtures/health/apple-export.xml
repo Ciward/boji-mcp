@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE HealthData [
+<!-- HealthKit Export Version: 11; synthetic fixture, no personal data -->
+<!ELEMENT HealthData (ExportDate,Me,(Record|Correlation|Workout|ActivitySummary|ClinicalRecord)*)>
+<!ATTLIST HealthData locale CDATA #REQUIRED>
+<!ELEMENT ExportDate EMPTY>
+<!ATTLIST ExportDate value CDATA #REQUIRED>
+<!ELEMENT Me EMPTY>
+<!ELEMENT Record ((MetadataEntry|HeartRateVariabilityMetadataList)*)>
+<!ATTLIST Record type CDATA #REQUIRED unit CDATA #IMPLIED value CDATA #IMPLIED sourceName CDATA #REQUIRED sourceVersion CDATA #IMPLIED device CDATA #IMPLIED creationDate CDATA #IMPLIED startDate CDATA #REQUIRED endDate CDATA #REQUIRED>
+<!ELEMENT MetadataEntry EMPTY>
+<!ATTLIST MetadataEntry key CDATA #REQUIRED value CDATA #REQUIRED>
+<!ELEMENT Workout ((MetadataEntry|WorkoutEvent|WorkoutStatistics|WorkoutRoute)*)>
+<!ATTLIST Workout workoutActivityType CDATA #REQUIRED duration CDATA #REQUIRED durationUnit CDATA #REQUIRED sourceName CDATA #REQUIRED startDate CDATA #REQUIRED endDate CDATA #REQUIRED>
+]>
+<HealthData locale="en_US">
+  <ExportDate value="2026-10-20 16:00:00 +0800"/>
+  <Me/>
+  <Record type="HKQuantityTypeIdentifierStepCount" sourceName="Synthetic Apple Watch" device="Watch" unit="count" startDate="2026-10-20 08:00:00 +0800" endDate="2026-10-20 09:00:00 +0800" value="1000"/>
+  <Record type="HKQuantityTypeIdentifierStepCount" sourceName="Synthetic iPhone" device="iPhone" unit="count" startDate="2026-10-20 08:00:00 +0800" endDate="2026-10-20 09:00:00 +0800" value="1100"/>
+  <Record type="HKQuantityTypeIdentifierStepCount" sourceName="Synthetic iPhone" device="iPhone" unit="count" startDate="2026-10-20 11:00:00 +0800" endDate="2026-10-20 12:00:00 +0800" value="300"/>
+  <Record type="HKQuantityTypeIdentifierActiveEnergyBurned" sourceName="Synthetic Apple Watch" unit="kcal" startDate="2026-10-20 08:00:00 +0800" endDate="2026-10-20 09:00:00 +0800" value="80"/>
+  <Record type="HKQuantityTypeIdentifierBasalEnergyBurned" sourceName="Synthetic Apple Watch" unit="kJ" startDate="2026-10-20 00:00:00 +0800" endDate="2026-10-20 12:00:00 +0800" value="4184"/>
+  <Record type="HKQuantityTypeIdentifierBodyMass" sourceName="Synthetic Scale &amp; App" unit="lb" startDate="2026-10-20 07:00:00 +0800" endDate="2026-10-20 07:00:00 +0800" value="154.3235835294143">
+    <MetadataEntry key="HKMetadataKeySyncIdentifier" value="synthetic-weight-1"/>
+  </Record>
+  <Record type="HKCategoryTypeIdentifierSleepAnalysis" sourceName="Synthetic Apple Watch" startDate="2026-10-19 22:00:00 +0800" endDate="2026-10-20 06:00:00 +0800" value="HKCategoryValueSleepAnalysisAsleepUnspecified"/>
+  <Record type="HKCategoryTypeIdentifierSleepAnalysis" sourceName="Synthetic Apple Watch" startDate="2026-10-19 23:00:00 +0800" endDate="2026-10-20 01:00:00 +0800" value="HKCategoryValueSleepAnalysisAsleepCore"/>
+  <Record type="HKCategoryTypeIdentifierSleepAnalysis" sourceName="Synthetic Apple Watch" startDate="2026-10-19 22:00:00 +0800" endDate="2026-10-20 07:00:00 +0800" value="HKCategoryValueSleepAnalysisInBed"/>
+  <Workout workoutActivityType="HKWorkoutActivityTypeWalking" duration="30" durationUnit="min" sourceName="Synthetic Apple Watch" startDate="2026-10-20 09:00:00 +0800" endDate="2026-10-20 09:30:00 +0800" totalEnergyBurned="80" totalEnergyBurnedUnit="kcal">
+    <WorkoutStatistics type="HKQuantityTypeIdentifierActiveEnergyBurned" sum="80" unit="kcal"/>
+  </Workout>
+  <Record type="HKQuantityTypeIdentifierHeartRate" sourceName="Synthetic Apple Watch" unit="count/min" startDate="2026-10-20 09:00:00 +0800" endDate="2026-10-20 09:00:00 +0800" value="70"/>
+  <ClinicalRecord type="synthetic" resourceFilePath="never-read.json"/>
+</HealthData>

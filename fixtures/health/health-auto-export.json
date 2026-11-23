@@ -1,0 +1,19 @@
+{
+  "data": {
+    "metrics": [
+      { "name": "step_count", "units": "count", "data": [{ "qty": 4321, "date": "2026-10-20 14:00:00 +0800", "source": "Synthetic Watch" }] },
+      { "name": "active_energy", "units": "kcal", "data": [{ "qty": 230, "date": "2026-10-20 14:00:00 +0800", "source": "Synthetic Watch" }] },
+      { "name": "basal_energy_burned", "units": "kJ", "data": [{ "qty": 4184, "date": "2026-10-20 14:00:00 +0800" }] },
+      { "name": "weight_&_body_mass", "units": "kg", "data": [{ "qty": 71.2, "date": "2026-10-20 08:00:00 +0800", "source": "Synthetic Scale" }] },
+      {
+        "name": "sleep_analysis", "units": "hr", "data": [{
+          "date": "2026-10-20", "totalSleep": 7.25, "asleep": 0.25, "core": 4, "deep": 1, "rem": 2,
+          "sleepStart": "2026-10-19 23:00:00 +0800", "sleepEnd": "2026-10-20 07:00:00 +0800",
+          "inBed": 8.5, "inBedStart": "2026-10-19 22:45:00 +0800", "inBedEnd": "2026-10-20 07:15:00 +0800"
+        }]
+      },
+      { "name": "heart_rate", "units": "bpm", "data": [{ "date": "2026-10-20 14:00:00 +0800", "Min": 60, "Avg": 72, "Max": 90 }] }
+    ],
+    "workouts": []
+  }
+}

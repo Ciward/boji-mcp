@@ -1,0 +1,12 @@
+.git
+.omx
+.env*
+data
+backups
+node_modules
+dist
+artifacts
+test-results
+playwright-report
+*.sqlite*
+.DS_Store

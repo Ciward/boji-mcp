@@ -1,0 +1,41 @@
+{
+  "name": "boji-health-mcp",
+  "version": "0.2.0",
+  "license": "PolyForm-Noncommercial-1.0.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "dev:web": "vite --host 127.0.0.1",
+    "build": "tsc -p tsconfig.server.json && vite build && npm run build:operator",
+    "start": "node dist/server/index.js",
+    "check": "tsc --noEmit && tsc -p tsconfig.server.json --noEmit && tsc -p tsconfig.operator.json --noEmit",
+    "test": "tsx --test tests/*.test.ts",
+    "setup": "tsx scripts/setup.ts",
+    "backup": "node dist/operator/scripts/backup.js",
+    "seed:demo": "node dist/operator/scripts/seed-demo.js",
+    "import:health": "node dist/operator/scripts/import-health.js",
+    "build:operator": "tsc -p tsconfig.operator.json"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.32.1",
+    "express": "5.3.0",
+    "zod": "4.6.7",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "saxes": "^6.0.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3",
+    "tsx": "^4.20.6",
+    "vite": "^7.3.1",
+    "@types/node": "^24.10.0",
+    "@types/express": "^5.0.5",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "@playwright/test": "^1.56.0"
+  }
+}
