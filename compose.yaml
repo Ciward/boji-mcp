@@ -1,6 +1,7 @@
 services:
   boji:
     build: .
+    image: ${BOJI_IMAGE:-boji-local:dev}
     restart: unless-stopped
     ports:
       - '${BOJI_BIND_ADDRESS:-127.0.0.1}:${BOJI_BIND_PORT:-8787}:8787'

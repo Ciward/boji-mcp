@@ -13,6 +13,7 @@ ENV NODE_ENV=production BOJI_HOST=0.0.0.0 BOJI_DATA_DIR=/data
 COPY --from=build --chown=node:node /app/node_modules ./node_modules
 COPY --from=build --chown=node:node /app/dist ./dist
 COPY package.json ./
+RUN install -d -o node -g node -m 0700 /data
 USER node
 EXPOSE 8787
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 CMD node -e "fetch('http://127.0.0.1:8787/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
