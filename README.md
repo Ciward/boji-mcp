@@ -10,12 +10,12 @@ Boji 是单人自托管服务。你可以只用网页记餐，也可以把支持
 
 你需要一台可以长期运行服务的托管服务器、供 Agent 使用的部署权限，以及一个 AI 客户端能访问的 HTTPS 地址。可以用自己的域名，也可以用托管平台提供的固定地址。准备好后，把下面这句话交给有终端能力的部署 Agent，替换两个尖括号中的内容即可。
 
-> 请按 https://github.com/Ciward/boji-mcp 的 README，把 Boji 部署到我的服务器 `<SSH 别名或部署目标>`，使用 `<公开 HTTPS 地址>`，验证服务和 OAuth 发现后，给我网页地址、管理密码的安全获取方式、MCP 地址，以及连接 AI 客户端并验证第一条工具调用的步骤。
+> 请按 https://github.com/Ciward/boji-mcp 的 README，用 Docker Compose 把 Boji 部署到我的服务器 `<SSH 别名或部署目标>`，使用 `<公开 HTTPS 地址>`，验证服务和 OAuth 发现后，给我网页地址、管理密码的安全获取方式、MCP 地址，以及连接 AI 客户端并验证第一条工具调用的步骤。
 
 **给部署 Agent 的执行说明**
 
 1. 确认目标主机、持久磁盘、可用端口和 HTTPS 入口。复用已授权的服务器连接与反向代理。如果已有 Boji 实例，先核对数据目录和已有配置，并备份后再升级。
-2. 首次安装推荐使用仓库根目录的 `compose.yaml`。在服务器专用目录克隆源码，设置权限为 `0600` 的 `.env`，写入 `BOJI_PUBLIC_URL`（完整 HTTPS origin）、`BOJI_TIMEZONE`（用户时区）和 `BOJI_ADMIN_PASSWORD`（首次安装可用 `openssl rand -hex 32` 生成并直接写入文件）。创建持久化 `data/` 目录，确保容器 UID 1000 可写，执行 `docker compose up -d --build`。已有实例沿用原密码和数据。
+2. 服务器默认使用 Docker Compose 和仓库根目录的 `compose.yaml` 部署。在服务器专用目录克隆源码，设置权限为 `0600` 的 `.env`，写入 `BOJI_PUBLIC_URL`（完整 HTTPS origin）、`BOJI_TIMEZONE`（用户时区）和 `BOJI_ADMIN_PASSWORD`（首次安装可用 `openssl rand -hex 32` 生成并直接写入文件）。创建持久化 `data/` 目录，确保容器 UID 1000 可写，执行 `docker compose up -d --build`。已有实例沿用原密码和数据。
 3. 将公开地址下的所有路径转发至 Boji；同机反向代理可回源 `127.0.0.1:8787`，保留原始 Host。确认公网 `/healthz` 返回 `ok: true`，`/.well-known/oauth-authorization-server` 的 `issuer` 等于公开 origin，`/.well-known/oauth-protected-resource/mcp` 的 `resource` 指向公开 `/mcp`，未携带凭据的 `POST /mcp` 返回 `401`。
 4. 交付实际网页地址、完整 `https://…/mcp` 地址、服务器上 `.env` 的位置和下面的客户端接入步骤。由账本主人在 Boji 授权页输入管理密码，聊天中只提供获取方式。若宿主登录需要本人操作，注明已通过的服务端检查，以及授权后要运行的 `boji_get_context` 验证指令。
 
@@ -58,7 +58,7 @@ docker compose --env-file /etc/boji/instance.env -f compose.yaml -f compose.tunn
 
 **跟随社区更新。** 记录当前 `git rev-parse HEAD`，备份账本和实例配置，再运行 `git pull --ff-only`，使用原 Compose 参数执行 `up -d --build`。检查公网健康、OAuth 发现和一次已授权的只读调用。回滚时停止新服务，检出旧提交，将升级前的数据库快照恢复到独立空目录，再使用与快照匹配的原配置和版本启动；切换前保留升级后的数据以便补录。
 
-## 先在本机记一餐
+## 可选：用 Node.js 在本机开发或试用
 
 在仓库根目录运行以下命令。需要 Node.js 24 或以上版本及 npm。
 
