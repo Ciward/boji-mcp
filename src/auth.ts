@@ -4,8 +4,10 @@ import type { Express, Request, RequestHandler, Response } from 'express';
 import { publicOrigins } from './config.js';
 
 const SCOPES = ['health.read', 'health.write'];
+const CLIENT_AUTH_METHODS = ['none', 'client_secret_post'];
 const HOUR = 3_600;
 const DAY = 24 * HOUR;
+const REFRESH_LIFETIME = 30 * DAY;
 const SCRYPT = { N: 16_384, r: 8, p: 1, maxmem: 32 * 1024 * 1024 };
 const now = () => Math.floor(Date.now() / 1000);
 const random = () => randomBytes(32).toString('base64url');
@@ -29,7 +31,7 @@ export function mcpChallenge(resourceMetadata: string, requiredScopes: readonly 
 }
 
 type Fields = Record<string, unknown>;
-type Client = { client_id: string; client_name: string; redirect_uris: string; scope: string; grant_types: string };
+type Client = { client_id: string; client_name: string; redirect_uris: string; scope: string; grant_types: string; client_secret_hash: string | null };
 type Session = { token_hash: string; expires_at: number; authenticated: number; csrfToken: string };
 type Pending = {
   request_hash: string; session_hash: string; client_id: string; redirect_uri: string;
@@ -72,6 +74,12 @@ function verifier(value: string): { salt: string; digest: string } | undefined {
   const match = /^scrypt\$([a-f0-9]{32})\$([a-f0-9]{128})$/.exec(value);
   return match ? { salt: match[1]!, digest: match[2]! } : undefined;
 }
+// Google Connected Apps requires a stable refresh token for persistent linking.
+// The exception is limited to confidential clients registered exclusively with Gemini relay callbacks.
+function usesPersistentRefresh(client: Client): boolean {
+  return client.client_secret_hash !== null && (JSON.parse(client.redirect_uris) as string[]).every(uri =>
+    /^https:\/\/oauth-redirect(?:-(?:sandbox|test))?\.googleusercontent\.com\/[ar]\/user_bound_custom-mcp-[A-Za-z0-9_-]+$/.test(uri));
+}
 function redirectUri(value: string): string {
   let url: URL;
   try { url = new URL(value); } catch { throw new OAuthError('invalid_redirect_uri', 'Invalid redirect URI'); }
@@ -108,6 +116,10 @@ export function createAuth(app: Express, db: DatabaseSync, config: { publicUrl: 
     CREATE TABLE IF NOT EXISTS auth_clients (
       client_id TEXT PRIMARY KEY, client_name TEXT NOT NULL, redirect_uris TEXT NOT NULL,
       scope TEXT NOT NULL, grant_types TEXT NOT NULL, created_at INTEGER NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS auth_secret_post_clients (
+      client_id TEXT PRIMARY KEY, client_name TEXT NOT NULL, redirect_uris TEXT NOT NULL,
+      scope TEXT NOT NULL, grant_types TEXT NOT NULL, created_at INTEGER NOT NULL, client_secret_hash TEXT NOT NULL
     );
     CREATE TABLE IF NOT EXISTS auth_sessions (
       token_hash TEXT PRIMARY KEY, authenticated INTEGER NOT NULL CHECK(authenticated IN (0,1)), expires_at INTEGER NOT NULL
@@ -288,13 +300,20 @@ export function createAuth(app: Express, db: DatabaseSync, config: { publicUrl: 
     next();
   };
   function getClient(id: string): Client | undefined {
-    return db.prepare('SELECT * FROM auth_clients WHERE client_id = ?').get(id) as Client | undefined;
+    // Older binaries only read auth_clients, so a rollback cannot treat confidential clients as public clients.
+    return (db.prepare('SELECT *, NULL AS client_secret_hash FROM auth_clients WHERE client_id = ?').get(id) ??
+      db.prepare('SELECT * FROM auth_secret_post_clients WHERE client_id = ?').get(id)) as Client | undefined;
   }
   function clientFrom(body: Fields, req?: Request): Client {
     const id = field(body, 'client_id', true, 128)!;
     const client = getClient(id);
-    if (!client || req?.get('Authorization') || body.client_secret !== undefined || body.client_assertion !== undefined) {
-      throw new OAuthError('invalid_client', 'Unknown client or unsupported client authentication', 401);
+    const secret = body.client_secret;
+    const secretHash = req ? client?.client_secret_hash : null;
+    const authenticated = secretHash != null
+      ? typeof secret === 'string' && /^[A-Za-z0-9_-]{43}$/.test(secret) && equal(hash(secret), secretHash)
+      : secret === undefined;
+    if (!client || req?.get('Authorization') || body.client_assertion !== undefined || !authenticated) {
+      throw new OAuthError('invalid_client', 'Client authentication failed', 401);
     }
     return client;
   }
@@ -345,7 +364,7 @@ export function createAuth(app: Express, db: DatabaseSync, config: { publicUrl: 
     issuer, authorization_endpoint: `${issuer}/oauth/authorize`, token_endpoint: `${issuer}/oauth/token`,
     registration_endpoint: `${issuer}/oauth/register`, revocation_endpoint: `${issuer}/oauth/revoke`,
     response_types_supported: ['code'], grant_types_supported: ['authorization_code', 'refresh_token'],
-    token_endpoint_auth_methods_supported: ['none'], revocation_endpoint_auth_methods_supported: ['none'],
+    token_endpoint_auth_methods_supported: CLIENT_AUTH_METHODS, revocation_endpoint_auth_methods_supported: CLIENT_AUTH_METHODS,
     code_challenge_methods_supported: ['S256'], scopes_supported: SCOPES,
     authorization_response_iss_parameter_supported: true, client_id_metadata_document_supported: false,
   });
@@ -373,19 +392,27 @@ export function createAuth(app: Express, db: DatabaseSync, config: { publicUrl: 
     }
     const redirects = [...new Set((body.redirect_uris as string[]).map(redirectUri))];
     const grants = body.grant_types ?? ['authorization_code'];
+    const authMethod = body.token_endpoint_auth_method === undefined ? 'none' : body.token_endpoint_auth_method;
     if (!Array.isArray(grants) || !grants.includes('authorization_code') || grants.length > 2 ||
         grants.some(grant => grant !== 'authorization_code' && grant !== 'refresh_token') ||
         (body.response_types !== undefined && (!Array.isArray(body.response_types) || body.response_types.length !== 1 || body.response_types[0] !== 'code')) ||
-        (body.token_endpoint_auth_method !== undefined && body.token_endpoint_auth_method !== 'none')) {
-      throw new OAuthError('invalid_client_metadata', 'Only public authorization-code clients with optional refresh tokens are supported');
+        (authMethod !== 'none' && authMethod !== 'client_secret_post')) {
+      throw new OAuthError('invalid_client_metadata', 'Only authorization-code clients using none or client_secret_post, with optional refresh tokens, are supported');
     }
     const clientName = field(body, 'client_name', false, 128) ?? '未命名客户端';
     const scope = scopes(field(body, 'scope', false) ?? SCOPES.join(' ')).join(' ');
     const clientId = random();
     const issuedAt = now();
-    db.prepare('INSERT INTO auth_clients VALUES (?, ?, ?, ?, ?, ?)').run(clientId, clientName, JSON.stringify(redirects), scope, JSON.stringify(grants), issuedAt);
+    const registration = [clientId, clientName, JSON.stringify(redirects), scope, JSON.stringify(grants), issuedAt];
+    const secret = authMethod === 'client_secret_post' ? random() : undefined;
+    if (secret) {
+      db.prepare('INSERT INTO auth_secret_post_clients VALUES (?, ?, ?, ?, ?, ?, ?)').run(...registration, hash(secret));
+    } else {
+      db.prepare('INSERT INTO auth_clients VALUES (?, ?, ?, ?, ?, ?)').run(...registration);
+    }
     res.status(201).json({ client_id: clientId, client_id_issued_at: issuedAt, client_name: clientName,
-      redirect_uris: redirects, scope, grant_types: grants, response_types: ['code'], token_endpoint_auth_method: 'none' });
+      redirect_uris: redirects, scope, grant_types: grants, response_types: ['code'], token_endpoint_auth_method: authMethod,
+      ...(secret && { client_secret: secret, client_secret_expires_at: 0 }) });
   }));
 
   function authorizationParameters(req: Request, query: Fields) {
@@ -544,7 +571,7 @@ export function createAuth(app: Express, db: DatabaseSync, config: { publicUrl: 
       if (code.used_at !== null) { if (code.grant_id) revoke(code.grant_id); throw new OAuthError('invalid_grant', 'Authorization code was already used'); }
       const tokens = transaction(() => {
         const grant: Grant = { grant_id: random(), client_id: client.client_id, scope: granted, resource,
-          expires_at: now() + ((JSON.parse(client.grant_types) as string[]).includes('refresh_token') ? 30 * DAY : HOUR), revoked_at: null };
+          expires_at: now() + ((JSON.parse(client.grant_types) as string[]).includes('refresh_token') ? REFRESH_LIFETIME : HOUR), revoked_at: null };
         const consumed = db.prepare('UPDATE auth_codes SET used_at = ?, grant_id = ? WHERE code_hash = ? AND used_at IS NULL').run(now(), grant.grant_id, code.code_hash);
         if (consumed.changes !== 1) throw new OAuthError('invalid_grant', 'Authorization code was already used');
         db.prepare('INSERT INTO auth_grants VALUES (?, ?, ?, ?, ?, NULL)').run(grant.grant_id, client.client_id, granted, resource, grant.expires_at);
@@ -553,7 +580,8 @@ export function createAuth(app: Express, db: DatabaseSync, config: { publicUrl: 
       console.info(JSON.stringify({ event: 'boji.auth', action: 'token_issued', grant_type: type, scope: tokens.scope, expires_in: tokens.expires_in }));
       res.json(tokens);
     } else {
-      const token = db.prepare('SELECT * FROM auth_refresh_tokens WHERE token_hash = ?').get(hash(field(body, 'refresh_token', true, 128)!)) as Token | undefined;
+      const raw = field(body, 'refresh_token', true, 128)!;
+      const token = db.prepare('SELECT * FROM auth_refresh_tokens WHERE token_hash = ?').get(hash(raw)) as Token | undefined;
       const grant = token && db.prepare('SELECT * FROM auth_grants WHERE grant_id = ?').get(token.grant_id) as Grant | undefined;
       if (!token || !grant || token.expires_at <= now() || grant.expires_at <= now() || grant.revoked_at !== null ||
           token.client_id !== client.client_id || grant.client_id !== client.client_id || token.resource !== resource || grant.resource !== resource) {
@@ -564,6 +592,18 @@ export function createAuth(app: Express, db: DatabaseSync, config: { publicUrl: 
       const scope = allowedScopes(scopeRequested ?? token.scope, token.scope).join(' ');
       allowedScopes(scope, client.scope);
       const tokens = transaction(() => {
+        if (usesPersistentRefresh(client)) {
+          const timestamp = now();
+          const expiry = timestamp + REFRESH_LIFETIME;
+          const renewed = db.prepare(`UPDATE auth_refresh_tokens SET scope = ?, expires_at = ?
+            WHERE token_hash = ? AND used_at IS NULL AND scope = ? AND expires_at > ?`)
+            .run(scope, expiry, token.token_hash, token.scope, timestamp);
+          const active = db.prepare(`UPDATE auth_grants SET expires_at = ?
+            WHERE grant_id = ? AND revoked_at IS NULL AND expires_at > ?`).run(expiry, grant.grant_id, timestamp);
+          if (renewed.changes !== 1 || active.changes !== 1) throw new OAuthError('invalid_grant', 'Invalid refresh token');
+          db.prepare('DELETE FROM auth_access_tokens WHERE grant_id = ?').run(grant.grant_id);
+          return { ...issue({ ...grant, expires_at: expiry }, scope, false), refresh_token: raw };
+        }
         const consumed = db.prepare('UPDATE auth_refresh_tokens SET used_at = ? WHERE token_hash = ? AND used_at IS NULL').run(now(), token.token_hash);
         if (consumed.changes !== 1) throw new OAuthError('invalid_grant', 'Refresh token was already used');
         db.prepare('DELETE FROM auth_access_tokens WHERE grant_id = ?').run(grant.grant_id);

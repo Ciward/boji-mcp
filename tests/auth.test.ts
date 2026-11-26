@@ -17,7 +17,7 @@ const challenge = (value: string) => createHash('sha256').update(value).digest('
 const epoch = () => Math.floor(Date.now() / 1000);
 type ObjectBody = Record<string, unknown>;
 type Browser = { cookie: string; csrf?: string };
-type Client = { client_id: string; redirect_uris: string[]; scope: string };
+type Client = { client_id: string; redirect_uris: string[]; scope: string; client_secret?: string; client_secret_expires_at?: number; token_endpoint_auth_method?: string };
 type Tokens = { access_token: string; refresh_token: string; scope: string; token_type: string; expires_in: number };
 type Consent = { request_id: string; csrf_token: string; response: Response; html: string };
 
@@ -141,7 +141,8 @@ test('discovery advertises PKCE, DCR, issuer responses and exact MCP resource; a
   const metadata = await (await f.request('/.well-known/oauth-authorization-server')).json();
   assert.equal(metadata.issuer, f.origin);
   assert.deepEqual(metadata.code_challenge_methods_supported, ['S256']);
-  assert.deepEqual(metadata.token_endpoint_auth_methods_supported, ['none']);
+  assert.deepEqual(metadata.token_endpoint_auth_methods_supported, ['none', 'client_secret_post']);
+  assert.deepEqual(metadata.revocation_endpoint_auth_methods_supported, metadata.token_endpoint_auth_methods_supported);
   assert.equal(metadata.registration_endpoint, f.origin + '/oauth/register');
   assert.equal(metadata.authorization_response_iss_parameter_supported, true);
   assert.equal(metadata.client_id_metadata_document_supported, false);
@@ -232,7 +233,100 @@ test('DCR rejects unsupported authentication, grants and scopes', async t => {
   }
   await error(await f.json('/oauth/register', { redirect_uris: [REDIRECT], scope: 'admin' }), 400, 'invalid_scope');
   const response = await f.json('/oauth/register', { redirect_uris: [REDIRECT] });
-  assert.deepEqual((await response.json()).grant_types, ['authorization_code']);
+  const registration = await response.json();
+  assert.deepEqual(registration.grant_types, ['authorization_code']);
+  assert.equal(registration.token_endpoint_auth_method, 'none');
+  assert.equal(registration.client_secret, undefined);
+});
+
+test('confidential DCR uses client_secret_post for code exchange, refresh and revocation', async t => {
+  const f = await fixture(t);
+  const redirects = ['r', 'a'].flatMap(path => ['', '-sandbox', '-test'].map(environment =>
+    `https://oauth-redirect${environment}.googleusercontent.com/${path}/user_bound_custom-mcp-0123456789abcdef01234567`));
+  const client = await f.register({ redirect_uris: redirects, token_endpoint_auth_method: 'client_secret_post' });
+  assert.equal(client.token_endpoint_auth_method, 'client_secret_post');
+  assert.equal(client.client_secret_expires_at, 0);
+  assert.deepEqual(client.redirect_uris, redirects);
+  const secret = client.client_secret!;
+  assert.match(secret, /^[A-Za-z0-9_-]{43}$/);
+  const stored = f.db.prepare('SELECT * FROM auth_secret_post_clients WHERE client_id = ?').get(client.client_id)!;
+  assert.equal(stored.client_secret_hash, sha(secret));
+  assert.ok(!JSON.stringify(stored).includes(secret));
+  assert.equal(f.db.prepare('SELECT client_id FROM auth_clients WHERE client_id = ?').get(client.client_id), undefined);
+
+  const publicClient = await f.grant();
+  assert.equal((await f.mcp(publicClient.tokens.access_token, '/mcp-write')).status, 200);
+  const pkce = randomBytes(32).toString('base64url');
+  const raw = await f.code(client, pkce);
+  await error(await f.exchange(client, raw, pkce), 401, 'invalid_client');
+  await error(await f.exchange(client, raw, pkce, { client_secret: 'wrong-secret' }), 401, 'invalid_client');
+  await error(await f.exchange(client, raw, pkce, { client_secret: secret, client_assertion: 'wrong-method' }), 401, 'invalid_client');
+  await error(await f.exchange(client, raw, 'x'.repeat(43), { client_secret: secret }), 400, 'invalid_grant');
+  const basic = Buffer.from(`${client.client_id}:${secret}`).toString('base64');
+  await error(await f.form('/oauth/token', { grant_type: 'authorization_code', client_id: client.client_id, code: raw,
+    code_verifier: pkce, redirect_uri: redirects[0]!, resource: f.origin + '/mcp' }, undefined, { Authorization: `Basic ${basic}` }), 401, 'invalid_client');
+
+  const exchanged = await f.exchange(client, raw, pkce, { client_secret: secret });
+  assert.equal(exchanged.status, 200);
+  const tokens = await exchanged.json() as Tokens;
+  assert.equal(tokens.scope, 'health.read health.write');
+  assert.equal((await f.mcp(tokens.access_token, '/mcp-write')).status, 200);
+  await error(await f.refresh(client, tokens.refresh_token), 401, 'invalid_client');
+  await error(await f.refresh(client, tokens.refresh_token, { client_secret: 'wrong-secret' }), 401, 'invalid_client');
+  const tokenHash = sha(tokens.refresh_token);
+  const grantId = f.db.prepare('SELECT grant_id FROM auth_refresh_tokens WHERE token_hash = ?').get(tokenHash)!.grant_id;
+  const oldExpiry = epoch() + 3600;
+  f.db.prepare('UPDATE auth_refresh_tokens SET expires_at = ? WHERE token_hash = ?').run(oldExpiry, tokenHash);
+  f.db.prepare('UPDATE auth_grants SET expires_at = ? WHERE grant_id = ?').run(oldExpiry, grantId);
+  const refreshed = await f.refresh(client, tokens.refresh_token, { client_secret: secret });
+  assert.equal(refreshed.status, 200);
+  const renewed = await refreshed.json() as Tokens;
+  assert.equal(renewed.scope, tokens.scope);
+  assert.equal(renewed.refresh_token, tokens.refresh_token);
+  assert.notEqual(renewed.access_token, tokens.access_token);
+  await error(await f.mcp(tokens.access_token), 401, 'invalid_token');
+  const expiry = Number(f.db.prepare('SELECT expires_at FROM auth_refresh_tokens WHERE token_hash = ?').get(tokenHash)!.expires_at);
+  assert.ok(expiry >= epoch() + 30 * 86400 - 1);
+  assert.equal(f.db.prepare('SELECT expires_at FROM auth_grants WHERE grant_id = ?').get(grantId)!.expires_at, expiry);
+
+  const revocation = { client_id: client.client_id, token: renewed.refresh_token };
+  await error(await f.form('/oauth/revoke', revocation), 401, 'invalid_client');
+  await error(await f.form('/oauth/revoke', { ...revocation, client_secret: 'wrong-secret' }), 401, 'invalid_client');
+  assert.equal((await f.mcp(renewed.access_token, '/mcp-write')).status, 200);
+  const downscoped = await f.refresh(client, renewed.refresh_token, { client_secret: secret, scope: 'health.read' });
+  assert.equal(downscoped.status, 200);
+  const narrowed = await downscoped.json() as Tokens;
+  assert.equal(narrowed.refresh_token, tokens.refresh_token);
+  assert.equal(narrowed.scope, 'health.read');
+  await error(await f.refresh(client, narrowed.refresh_token, { client_secret: secret, scope: tokens.scope }), 400, 'invalid_scope');
+  assert.equal((await f.form('/oauth/revoke', { ...revocation, client_secret: secret })).status, 200);
+  await error(await f.mcp(narrowed.access_token), 401, 'invalid_token');
+  await error(await f.refresh(client, narrowed.refresh_token, { client_secret: secret }), 400, 'invalid_grant');
+  assert.equal((await f.mcp(publicClient.tokens.access_token)).status, 200);
+});
+
+test('only Gemini relay clients use persistent refresh, and an expired refresh token stays expired', async t => {
+  const f = await fixture(t);
+  const redirect = 'https://oauth-redirect.googleusercontent.com/r/user_bound_custom-mcp-0123456789abcdef01234567';
+  for (const [redirectUris, authentication] of [
+    [[redirect, REDIRECT], 'client_secret_post'], [[redirect], 'none'], [[redirect], 'client_secret_post'],
+  ] as const) {
+    const client = await f.register({ redirect_uris: redirectUris, token_endpoint_auth_method: authentication });
+    const pkce = randomBytes(32).toString('base64url');
+    const raw = await f.code(client, pkce);
+    const credentials: Record<string, string> = client.client_secret ? { client_secret: client.client_secret } : {};
+    const exchanged = await f.exchange(client, raw, pkce, credentials);
+    assert.equal(exchanged.status, 200);
+    const tokens = await exchanged.json() as Tokens;
+    if (redirectUris.length === 1 && authentication === 'client_secret_post') {
+      f.db.prepare('UPDATE auth_refresh_tokens SET expires_at = ? WHERE token_hash = ?').run(epoch() - 1, sha(tokens.refresh_token));
+      await error(await f.refresh(client, tokens.refresh_token, credentials), 400, 'invalid_grant');
+    } else {
+      const refreshed = await f.refresh(client, tokens.refresh_token, credentials);
+      assert.equal(refreshed.status, 200);
+      assert.notEqual((await refreshed.json()).refresh_token, tokens.refresh_token);
+    }
+  }
 });
 
 test('password form displays scopes and redirect origin safely, binds consent to browser, rotates on login', async t => {
