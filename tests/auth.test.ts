@@ -149,7 +149,8 @@ test('discovery advertises PKCE, DCR, issuer responses and exact MCP resource; a
   const resource = await (await f.request('/.well-known/oauth-protected-resource/mcp')).json();
   assert.deepEqual(resource, await (await f.request('/.well-known/oauth-protected-resource')).json());
   assert.equal(resource.resource, f.origin + '/mcp');
-  assert.deepEqual(resource.scopes_supported, ['health.read', 'health.write']);
+  assert.deepEqual(resource.scopes_supported, ['health.full', 'health.read', 'health.write']);
+  assert.deepEqual(metadata.scopes_supported, resource.scopes_supported);
   const response = await f.request('/mcp?access_token=pretend');
   assert.equal(response.status, 401);
   assert.match(response.headers.get('www-authenticate')!, new RegExp('resource_metadata="' + f.origin + '/.well-known/oauth-protected-resource/mcp"'));
@@ -327,6 +328,53 @@ test('only Gemini relay clients use persistent refresh, and an expired refresh t
       assert.notEqual((await refreshed.json()).refresh_token, tokens.refresh_token);
     }
   }
+});
+
+test('Gemini can negotiate a single full scope without resource parameters while explicit read grants stay narrow', async t => {
+  const canonical = 'https://boji.example.org';
+  const legacy = 'https://legacy-boji.example.org';
+  const f = await fixture(t, { publicUrl: canonical, publicUrlAliases: [legacy] });
+  const redirect = 'https://oauth-redirect.googleusercontent.com/r/user_bound_custom-mcp-0123456789abcdef01234567';
+  const client = await f.register({ redirect_uris: [redirect], token_endpoint_auth_method: 'client_secret_post' });
+  const other = await f.register();
+  const pkce = randomBytes(32).toString('base64url');
+  const browser: Browser = { cookie: '' };
+  const flow = await f.authorize(client, pkce, browser, { resource: undefined, scope: 'health.full' });
+  assert.equal(flow.response.status, 200);
+  assert.match(flow.html, /请求权限：health\.read health\.write/);
+  assert.match(flow.html, /health\.write：新增、修改、删除和恢复健康记录/);
+  assert.ok(flow.html.includes(canonical + '/mcp'));
+  assert.equal((await f.authorize(other, pkce, { cookie: '' }, { resource: undefined })).response.status, 400);
+  assert.equal((await f.authorize(client, pkce, { cookie: '' }, { resource: legacy + '/mcp' })).response.status, 400);
+  const consent = await f.consent(flow, browser);
+  assert.equal(consent.status, 303);
+  const code = new URL(consent.headers.get('location')!).searchParams.get('code')!;
+  const tokenBody = { client_id: client.client_id, client_secret: client.client_secret!, grant_type: 'authorization_code',
+    code, code_verifier: pkce, redirect_uri: redirect, scope: 'health.full' };
+  await error(await f.form('/oauth/token', tokenBody, undefined, { Host: new URL(legacy).host }), 400, 'invalid_request');
+  await error(await f.form('/oauth/token', { ...tokenBody, resource: legacy + '/mcp' }), 400, 'invalid_grant');
+  const exchange = await f.form('/oauth/token', tokenBody);
+  assert.equal(exchange.status, 200);
+  const tokens = await exchange.json() as Tokens;
+  assert.equal(tokens.scope, 'health.full');
+  assert.equal((await f.mcp(tokens.access_token, '/mcp-write')).status, 200);
+  assert.deepEqual((await (await f.mcp(tokens.access_token)).json()).scopes, ['health.read', 'health.write']);
+  const refreshBody = { client_id: client.client_id, client_secret: client.client_secret!, grant_type: 'refresh_token', refresh_token: tokens.refresh_token };
+  const refresh = await f.form('/oauth/token', { ...refreshBody, scope: 'health.full' });
+  assert.equal(refresh.status, 200);
+  assert.equal((await refresh.json()).scope, 'health.full');
+  const narrowed = await f.form('/oauth/token', { ...refreshBody, scope: 'health.read' });
+  assert.equal(narrowed.status, 200);
+  const readTokens = await narrowed.json() as Tokens;
+  assert.equal(readTokens.scope, 'health.read');
+  assert.equal((await f.mcp(readTokens.access_token, '/mcp-write')).status, 403);
+  await error(await f.form('/oauth/token', { ...refreshBody, scope: 'health.full' }), 400, 'invalid_scope');
+  const readonly = await f.register({ scope: 'health.read' });
+  const explicitRead = await f.authorize(readonly, pkce, { cookie: '' }, { scope: 'health.read' });
+  assert.equal(explicitRead.response.status, 200);
+  assert.match(explicitRead.html, /请求权限：health\.read<\//);
+  assert.doesNotMatch(explicitRead.html, /新增、修改、删除和恢复健康记录/);
+  assert.equal((await f.authorize(readonly, pkce, { cookie: '' }, { scope: 'health.full' })).response.status, 400);
 });
 
 test('password form displays scopes and redirect origin safely, binds consent to browser, rotates on login', async t => {

@@ -4,6 +4,8 @@ import type { Express, Request, RequestHandler, Response } from 'express';
 import { publicOrigins } from './config.js';
 
 const SCOPES = ['health.read', 'health.write'];
+const FULL_SCOPE = 'health.full';
+const ADVERTISED_SCOPES = [FULL_SCOPE, ...SCOPES];
 const CLIENT_AUTH_METHODS = ['none', 'client_secret_post'];
 const HOUR = 3_600;
 const DAY = 24 * HOUR;
@@ -62,21 +64,24 @@ function fields(value: unknown): Fields {
 }
 function scopes(value: string): string[] {
   const result = value.split(' ');
-  if (!result.length || result.some(scope => !SCOPES.includes(scope))) throw new OAuthError('invalid_scope', 'Unsupported scope');
+  if (!result.length || result.some(scope => !ADVERTISED_SCOPES.includes(scope))) throw new OAuthError('invalid_scope', 'Unsupported scope');
   return [...new Set(result)];
+}
+function capabilities(value: string): string[] {
+  return [...new Set(scopes(value).flatMap(scope => scope === FULL_SCOPE ? SCOPES : [scope]))];
 }
 function allowedScopes(value: string, allowed: string): string[] {
   const result = scopes(value);
-  if (result.some(scope => !allowed.split(' ').includes(scope))) throw new OAuthError('invalid_scope', 'Scope exceeds the grant');
+  const allowedCapabilities = capabilities(allowed);
+  if (capabilities(value).some(scope => !allowedCapabilities.includes(scope))) throw new OAuthError('invalid_scope', 'Scope exceeds the grant');
   return result;
 }
 function verifier(value: string): { salt: string; digest: string } | undefined {
   const match = /^scrypt\$([a-f0-9]{32})\$([a-f0-9]{128})$/.exec(value);
   return match ? { salt: match[1]!, digest: match[2]! } : undefined;
 }
-// Google Connected Apps requires a stable refresh token for persistent linking.
-// The exception is limited to confidential clients registered exclusively with Gemini relay callbacks.
-function usesPersistentRefresh(client: Client): boolean {
+// Gemini compatibility exceptions apply only to confidential clients registered exclusively with its relay callbacks.
+function isGeminiConfidentialClient(client: Client): boolean {
   return client.client_secret_hash !== null && (JSON.parse(client.redirect_uris) as string[]).every(uri =>
     /^https:\/\/oauth-redirect(?:-(?:sandbox|test))?\.googleusercontent\.com\/[ar]\/user_bound_custom-mcp-[A-Za-z0-9_-]+$/.test(uri));
 }
@@ -294,7 +299,7 @@ export function createAuth(app: Express, db: DatabaseSync, config: { publicUrl: 
       !resources.has(token.resource) || grant.resource !== token.resource || token.client_id !== grant.client_id ? 'binding_mismatch' : undefined;
     if (reason) { challenge(401, 'invalid_token', reason); return; }
     let granted: string[];
-    try { granted = allowedScopes(token.scope, grant.scope); allowedScopes(token.scope, client.scope); }
+    try { allowedScopes(token.scope, grant.scope); allowedScopes(token.scope, client.scope); granted = capabilities(token.scope); }
     catch { challenge(403, 'insufficient_scope', 'scope_binding_mismatch'); return; }
     res.locals.auth = { scopes: granted, clientId: token.client_id };
     next();
@@ -317,8 +322,12 @@ export function createAuth(app: Express, db: DatabaseSync, config: { publicUrl: 
     }
     return client;
   }
-  function checkResource(body: Fields): string {
-    const resource = field(body, 'resource')!;
+  function checkResource(req: Request, body: Fields, client: Client): string {
+    const provided = field(body, 'resource', false);
+    if (provided === undefined && requestIssuer(req) === issuer && isGeminiConfidentialClient(client)) {
+      return requestResource(req);
+    }
+    const resource = provided ?? field(body, 'resource')!;
     if (!resources.has(resource)) throw new OAuthError('invalid_target', 'Resource must exactly match a configured MCP endpoint');
     return resource;
   }
@@ -365,7 +374,7 @@ export function createAuth(app: Express, db: DatabaseSync, config: { publicUrl: 
     registration_endpoint: `${issuer}/oauth/register`, revocation_endpoint: `${issuer}/oauth/revoke`,
     response_types_supported: ['code'], grant_types_supported: ['authorization_code', 'refresh_token'],
     token_endpoint_auth_methods_supported: CLIENT_AUTH_METHODS, revocation_endpoint_auth_methods_supported: CLIENT_AUTH_METHODS,
-    code_challenge_methods_supported: ['S256'], scopes_supported: SCOPES,
+    code_challenge_methods_supported: ['S256'], scopes_supported: ADVERTISED_SCOPES,
     authorization_response_iss_parameter_supported: true, client_id_metadata_document_supported: false,
   });
   // These endpoints use explicit protocol credentials and never a browser cookie.
@@ -380,7 +389,7 @@ export function createAuth(app: Express, db: DatabaseSync, config: { publicUrl: 
   }
   app.get('/.well-known/oauth-authorization-server', (req, res) => { res.json(metadata(requestIssuer(req))); });
   app.get(['/.well-known/oauth-protected-resource', '/.well-known/oauth-protected-resource/mcp'], (req, res) => {
-    res.json({ resource: requestResource(req), authorization_servers: [requestIssuer(req)], scopes_supported: SCOPES, bearer_methods_supported: ['header'] });
+    res.json({ resource: requestResource(req), authorization_servers: [requestIssuer(req)], scopes_supported: ADVERTISED_SCOPES, bearer_methods_supported: ['header'] });
   });
   app.post('/oauth/register', endpoint((req, res) => {
     if (!rate(req, res, 'register', 20, HOUR, 100)) return;
@@ -420,7 +429,7 @@ export function createAuth(app: Express, db: DatabaseSync, config: { publicUrl: 
     const redirect = field(query, 'redirect_uri')!;
     if (!(JSON.parse(client.redirect_uris) as string[]).includes(redirect)) throw new OAuthError('invalid_request', 'Redirect URI is not registered');
     if (field(query, 'response_type') !== 'code') throw new OAuthError('unsupported_response_type', 'Only code is supported');
-    const resource = checkResource(query);
+    const resource = checkResource(req, query, client);
     if (resource !== requestResource(req)) throw new OAuthError('invalid_target', 'Authorization resource must match this origin');
     const scope = allowedScopes(field(query, 'scope', false) ?? client.scope, client.scope).join(' ');
     const challenge = field(query, 'code_challenge', true, 128)!;
@@ -470,7 +479,7 @@ export function createAuth(app: Express, db: DatabaseSync, config: { publicUrl: 
       <main><h1>授权访问 Boji 健康数据</h1><p>客户端：${escapeHtml(client.client_name)}</p>
       <p>注册名称由客户端提供，请核对回调地址。</p><p>回调来源：<strong>${escapeHtml(new URL(pending.redirect_uri).origin)}</strong></p>
       <p>完整回调：${escapeHtml(pending.redirect_uri)}</p><p>资源：${escapeHtml(pending.resource)}</p>
-      <p>请求权限：${escapeHtml(pending.scope)}</p><ul>${pending.scope.split(' ').map(scope => `<li>${scope === 'health.read' ? 'health.read：读取健康记录与汇总' : 'health.write：新增、修改、删除和恢复健康记录'}</li>`).join('')}</ul>
+      <p>请求权限：${escapeHtml(capabilities(pending.scope).join(' '))}</p><ul>${capabilities(pending.scope).map(scope => `<li>${scope === 'health.read' ? 'health.read：读取健康记录与汇总' : 'health.write：新增、修改、删除和恢复健康记录'}</li>`).join('')}</ul>
       ${message ? `<p role="alert">${escapeHtml(message)}</p>` : ''}
       <form method="post" action="${escapeHtml(authorizationUrl(pending))}">${hidden('request_id', requestId)}${hidden('csrf_token', session.csrfToken)}
       ${session.authenticated ? '<p>已通过管理员身份验证。</p>' : '<label>管理员密码 <input type="password" name="password" autocomplete="current-password" maxlength="1024" required></label>'}
@@ -551,7 +560,7 @@ export function createAuth(app: Express, db: DatabaseSync, config: { publicUrl: 
     if (!req.is('application/x-www-form-urlencoded')) throw new OAuthError('invalid_request', 'Token exchange requires a form');
     const body = fields(req.body);
     const client = clientFrom(body, req);
-    const resource = checkResource(body);
+    const resource = checkResource(req, body, client);
     const type = field(body, 'grant_type');
     if (type !== 'authorization_code' && type !== 'refresh_token') throw new OAuthError('unsupported_grant_type', 'Unsupported grant type');
     if (!(JSON.parse(client.grant_types) as string[]).includes(type)) throw new OAuthError('unauthorized_client', 'Client is not registered for this grant');
@@ -567,7 +576,7 @@ export function createAuth(app: Express, db: DatabaseSync, config: { publicUrl: 
         throw new OAuthError('invalid_grant', 'Invalid authorization code or PKCE binding');
       }
       const granted = allowedScopes(code.scope, client.scope).join(' ');
-      if (scopeRequested !== undefined && scopes(scopeRequested).sort().join(' ') !== scopes(granted).sort().join(' ')) throw new OAuthError('invalid_scope', 'Code scope cannot be changed');
+      if (scopeRequested !== undefined && capabilities(scopeRequested).sort().join(' ') !== capabilities(granted).sort().join(' ')) throw new OAuthError('invalid_scope', 'Code scope cannot be changed');
       if (code.used_at !== null) { if (code.grant_id) revoke(code.grant_id); throw new OAuthError('invalid_grant', 'Authorization code was already used'); }
       const tokens = transaction(() => {
         const grant: Grant = { grant_id: random(), client_id: client.client_id, scope: granted, resource,
@@ -592,7 +601,7 @@ export function createAuth(app: Express, db: DatabaseSync, config: { publicUrl: 
       const scope = allowedScopes(scopeRequested ?? token.scope, token.scope).join(' ');
       allowedScopes(scope, client.scope);
       const tokens = transaction(() => {
-        if (usesPersistentRefresh(client)) {
+        if (isGeminiConfidentialClient(client)) {
           const timestamp = now();
           const expiry = timestamp + REFRESH_LIFETIME;
           const renewed = db.prepare(`UPDATE auth_refresh_tokens SET scope = ?, expires_at = ?

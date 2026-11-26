@@ -80,6 +80,16 @@ test('OAuth + actual MCP SDK + browser API share one durable ledger and enforce 
   assert.equal((await call('/ingest/v1/'+source.source.id,{data:{metrics:[]}}, {Authorization:'Bearer '+tokens.access_token})).status,401);
   assert.equal((await call('/mcp',{}, {Authorization:'Bearer '+source.token})).status,401);
   const bridge=await call('/ingest/v1/'+source.source.id,{data:{metrics:[{name:'step_count',units:'count',data:[{qty:1234,date:'2026-10-20 12:00:00 +0800'}]}]}},{Authorization:'Bearer '+source.token});assert.equal(bridge.status,200,await bridge.text());
+  const fullTokens=await authorize('health.full');
+  assert.equal(fullTokens.scope,'health.full');
+  const fullClient=new Client({name:'boji-full-scope-regression',version:'1'});
+  await fullClient.connect(new StreamableHTTPClientTransport(new URL(base+'/mcp'),{requestInit:{headers:{Authorization:'Bearer '+fullTokens.access_token}}}));
+  try{
+   assert.deepEqual((await fullClient.listTools()).tools,tools.tools);
+   assert.equal((await fullClient.callTool({name:'boji_get_context',arguments:{}})).isError,undefined);
+   const created=await fullClient.callTool({name:'boji_record_meal',arguments:{idempotency_key:'full-scope-create-0001',meal}});
+   assert.equal((created.structuredContent as {persisted?:boolean} | undefined)?.persisted,true);
+  }finally{await fullClient.close();}
   const readTokens=await authorize('health.read');
   const readonlyClient=new Client({name:'boji-readonly-regression',version:'1'});
   await readonlyClient.connect(new StreamableHTTPClientTransport(new URL(base+'/mcp'),{requestInit:{headers:{Authorization:'Bearer '+readTokens.access_token}}}));
@@ -99,7 +109,7 @@ test('OAuth + actual MCP SDK + browser API share one durable ledger and enforce 
     assert.match(challenge,/scope="health.read health.write"/);
    }
    assert.equal(store.db.prepare('SELECT count(*) AS n FROM meals').get()!.n,before);
-   assert.equal(store.db.prepare('SELECT count(*) AS n FROM meal_history').get()!.n,4);
+   assert.equal(store.db.prepare('SELECT count(*) AS n FROM meal_history').get()!.n,5);
    assert.equal((await readonlyClient.callTool({name:'boji_get_context',arguments:{}})).isError,undefined);
    assert.equal(store.db.prepare('SELECT count(*) AS n FROM auth_grants WHERE revoked_at IS NOT NULL').get()!.n,0);
   }finally{await readonlyClient.close();}
