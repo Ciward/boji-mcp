@@ -386,7 +386,10 @@ test('password form displays scopes and redirect origin safely, binds consent to
   assert.equal(flow.response.status, 200);
   assert.match(flow.html, /health.read/); assert.match(flow.html, /health.write/); assert.match(flow.html, /https:\/\/client.example/);
   assert.match(flow.html, /&lt;script&gt;/); assert.doesNotMatch(flow.html, /<script>/);
+  assert.match(flow.response.headers.get('content-security-policy')!, /default-src 'none'/);
   assert.match(flow.response.headers.get('content-security-policy')!, /frame-ancestors 'none'/);
+  assert.match(flow.response.headers.get('content-security-policy')!, /base-uri 'none'/);
+  assert.doesNotMatch(flow.response.headers.get('content-security-policy')!, /form-action/);
   assert.equal(flow.response.headers.get('referrer-policy'), 'same-origin');
   assert.ok(flow.request_id); assert.ok(flow.csrf_token);
   assert.equal((await f.request('/api/v1/session', {}, browser)).status, 401);

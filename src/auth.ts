@@ -470,9 +470,10 @@ export function createAuth(app: Express, db: DatabaseSync, config: { publicUrl: 
   }
 
   function consentPage(res: Response, pending: Pending, client: Client, requestId: string, session: Session, message = ''): void {
-    // Chromium checks the form's redirect chain against form-action too. Permit only
-    // the registered callback origin; hostname validation prevents CSP injection.
-    res.set({ 'Content-Security-Policy': `default-src 'none'; form-action 'self' ${new URL(pending.redirect_uri).origin}; frame-ancestors 'none'; base-uri 'none'`,
+    // Chromium checks every hop of a form's redirect chain against form-action, and OAuth
+    // relays such as oauth-redirect.googleusercontent.com redirect onward to client origins
+    // we cannot enumerate ahead of time. Keep strict script/frame/base/same-origin protections.
+    res.set({ 'Content-Security-Policy': "default-src 'none'; frame-ancestors 'none'; base-uri 'none'",
       'X-Frame-Options': 'DENY', 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'same-origin' });
     const hidden = (key: string, value: string) => `<input type="hidden" name="${key}" value="${escapeHtml(value)}">`;
     res.type('html').send(`<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Boji 授权</title>
